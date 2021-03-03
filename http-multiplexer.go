@@ -49,8 +49,6 @@ type OutputData struct {
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
 	// Read incoming data into struct
 	var inputData InputData
 	err := json.NewDecoder(r.Body).Decode(&inputData)
@@ -68,10 +66,10 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	var result Result
 	result.Maps = make(map[int]Data, len(inputData.Urls))
-	var page string
 	var wg sync.WaitGroup
 	semaphoreChan := make(chan struct{}, MaxOutgoingRequests) // Use the buffered channel of structs as semaphore
 	errorChan := make(chan error, 1)
+	ctx := r.Context()
 	num := 0
 
 	for _, url := range inputData.Urls {
@@ -80,7 +78,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 		go func(url string, num int, result *Result, wg *sync.WaitGroup) {
 			defer wg.Done()
-			page, err = fetchPageContent(url)
+			page, err := fetchPageContent(url)
 			if err != nil {
 				errorChan <- err
 				return
@@ -110,9 +108,6 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 	}
-
-	close(errorChan)
-	close(semaphoreChan)
 
 	// Compile output data in incoming order
 	var outputData OutputData
