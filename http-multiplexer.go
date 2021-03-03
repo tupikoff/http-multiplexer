@@ -42,17 +42,18 @@ type OutputData struct {
 	Pages []Data `json:"pages"`
 }
 
-// Handle incoming request
 func handler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
 	// Read incoming data into struct
 	var inputData InputData
 	err := json.NewDecoder(r.Body).Decode(&inputData)
 	if err != nil {
-		errorHandling(w, err)
+		outputError(w, err)
 		return
 	}
 	log.Printf("%v", inputData)
+
 	// Initialize variables
 	var result Result
 	result.Maps = make(map[int]Data, len(inputData.Urls))
@@ -61,6 +62,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	semaphoreChannel := make(chan struct{}, MaxGoroutines) // Use the buffered channel of structs as semaphore
 	errors := make(chan error, 1)
 	num := 0
+
 	// Process working on incoming urls
 	for _, url := range inputData.Urls {
 		semaphoreChannel <- struct{}{} // wait until able to send element to channel
@@ -68,7 +70,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		// Goroutine will process get data from urls and fill the result structure
 		go func(url string, num int, result *Result, wg *sync.WaitGroup) {
 			defer wg.Done()
-			page, err = httpGetPage(url)
+			page, err = fetchPageContent(url)
 			if err != nil {
 				errors <- err
 				return
@@ -80,46 +82,41 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			// one element out from semaphore
 			<-semaphoreChannel
 		}(url, num, &result, &wg)
+		num++
+
+		// Wait for all goroutines done
+		if num == len(inputData.Urls) {
+			wg.Wait()
+		}
+
 		// Handle errors
 		select {
 		case err := <-errors:
-			errorHandling(w, err)
+			outputError(w, err)
 			return
 		case <-ctx.Done():
 			log.Println("Request was cancelled")
 			return
 		default:
 		}
-		num++
 	}
-	// Wait for all goroutines done
-	wg.Wait()
-	// Handle the rest of errors in error channel
-	select {
-	case err := <-errors:
-		errorHandling(w, err)
-		return
-	case <-ctx.Done():
-		log.Println("Request was cancelled")
-		return
-	default:
-	}
+
 	// compile output data in incoming order
 	var outputData OutputData
 	for i := 0; i < num; i++ {
 		outputData.Pages = append(outputData.Pages, result.Maps[i])
 	}
+
 	// output result
 	w.WriteHeader(http.StatusOK)
 	err = json.NewEncoder(w).Encode(&outputData)
 	if err != nil {
-		errorHandling(w, err)
+		outputError(w, err)
 		return
 	}
 }
 
-// Get page body for url
-func httpGetPage(url string) (page string, err error) {
+func fetchPageContent(url string) (page string, err error) {
 	client := http.Client{Timeout: ClientTimeoutSec * time.Second}
 	response, err := client.Get(url)
 	if err != nil {
@@ -134,13 +131,11 @@ func httpGetPage(url string) (page string, err error) {
 	return
 }
 
-// Log and errors
-func errorHandling(responseWriter http.ResponseWriter, err error) {
+func outputError(responseWriter http.ResponseWriter, err error) {
 	log.Println(err)
 	http.Error(responseWriter, err.Error(), http.StatusBadRequest)
 }
 
-//
 func main() {
 	// Initialize the server
 	router := http.NewServeMux()
@@ -148,6 +143,7 @@ func main() {
 	server := http.Server{
 		Handler: router,
 	}
+
 	// limit incoming connections
 	listener, err := net.Listen("tcp", ":9999")
 	if err != nil {
@@ -156,17 +152,20 @@ func main() {
 	listener = netutil.LimitListener(listener, MaxConnections)
 	defer listener.Close()
 	log.Printf("Server listening on %s\n", listener.Addr().String())
+
 	// Serve
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
 	}()
-	// Handle signals
+
+	// Handle terminations signals
 	signalChannel := make(chan os.Signal, 1)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 	<-signalChannel
 	log.Println("Shutting down the server gracefully...")
+
 	// Shutdown gracefully
 	ctx, cancel := context.WithTimeout(context.Background(), ServerShutdownTimeoutSec*time.Second)
 	defer cancel()
