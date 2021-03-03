@@ -20,12 +20,10 @@ const ClientTimeoutSec = 1
 const MaxConnections = 200
 const ServerShutdownTimeoutSec = 30
 
-// Incoming urls
 type InputData struct {
 	Urls []string
 }
 
-// Outcome result
 type Data struct {
 	Url  string `json:"url"`
 	Body string `json:"body"`
@@ -37,7 +35,6 @@ type Result struct {
 	Maps map[int]Data
 }
 
-// Structure for outgoing data
 type OutputData struct {
 	Pages []Data `json:"pages"`
 }
@@ -54,7 +51,6 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("%v", inputData)
 
-	// Initialize variables
 	var result Result
 	result.Maps = make(map[int]Data, len(inputData.Urls))
 	var page string
@@ -63,11 +59,10 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	errors := make(chan error, 1)
 	num := 0
 
-	// Process working on incoming urls
 	for _, url := range inputData.Urls {
-		semaphoreChannel <- struct{}{} // wait until able to send element to channel
+		semaphoreChannel <- struct{}{}
 		wg.Add(1)
-		// Goroutine will process get data from urls and fill the result structure
+
 		go func(url string, num int, result *Result, wg *sync.WaitGroup) {
 			defer wg.Done()
 			page, err = fetchPageContent(url)
@@ -79,7 +74,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			result.mx.RLock()
 			result.Maps[num] = Data{Url: url, Body: page}
 			result.mx.RUnlock()
-			// one element out from semaphore
+
 			<-semaphoreChannel
 		}(url, num, &result, &wg)
 		num++
@@ -89,7 +84,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			wg.Wait()
 		}
 
-		// Handle errors
+		// Handle errors and user cancellation
 		select {
 		case err := <-errors:
 			outputError(w, err)
@@ -101,13 +96,12 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// compile output data in incoming order
+	// Compile output data in incoming order
 	var outputData OutputData
 	for i := 0; i < num; i++ {
 		outputData.Pages = append(outputData.Pages, result.Maps[i])
 	}
 
-	// output result
 	w.WriteHeader(http.StatusOK)
 	err = json.NewEncoder(w).Encode(&outputData)
 	if err != nil {
@@ -137,14 +131,13 @@ func outputError(responseWriter http.ResponseWriter, err error) {
 }
 
 func main() {
-	// Initialize the server
 	router := http.NewServeMux()
 	router.HandleFunc("/", handler)
 	server := http.Server{
 		Handler: router,
 	}
 
-	// limit incoming connections
+	// Limit incoming connections
 	listener, err := net.Listen("tcp", ":9999")
 	if err != nil {
 		log.Fatal(err)
@@ -153,7 +146,6 @@ func main() {
 	defer listener.Close()
 	log.Printf("Server listening on %s\n", listener.Addr().String())
 
-	// Serve
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
