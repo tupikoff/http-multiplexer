@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"golang.org/x/net/context"
 	"golang.org/x/net/netutil"
 	"io/ioutil"
@@ -15,9 +16,17 @@ import (
 	"time"
 )
 
-const MaxGoroutines = 4
+const MaxIncomingUrls = 20
+
+// Maximum number of simultaneous outgoing requests (goroutines) on each incoming
+const MaxOutgoingRequests = 4
+
+// Outgoing request timeout
 const ClientTimeoutSec = 1
-const MaxConnections = 200
+
+// Maximum incoming connections
+const MaxConnections = 100
+
 const ServerShutdownTimeoutSec = 30
 
 type InputData struct {
@@ -51,23 +60,29 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("%v", inputData)
 
+	// Reject request with more than twenty urls
+	if len(inputData.Urls) > MaxIncomingUrls {
+		outputError(w, errors.New("more than 20 urls"))
+		return
+	}
+
 	var result Result
 	result.Maps = make(map[int]Data, len(inputData.Urls))
 	var page string
 	var wg sync.WaitGroup
-	semaphoreChannel := make(chan struct{}, MaxGoroutines) // Use the buffered channel of structs as semaphore
-	errors := make(chan error, 1)
+	semaphoreChan := make(chan struct{}, MaxOutgoingRequests) // Use the buffered channel of structs as semaphore
+	errorChan := make(chan error, 1)
 	num := 0
 
 	for _, url := range inputData.Urls {
-		semaphoreChannel <- struct{}{}
+		semaphoreChan <- struct{}{}
 		wg.Add(1)
 
 		go func(url string, num int, result *Result, wg *sync.WaitGroup) {
 			defer wg.Done()
 			page, err = fetchPageContent(url)
 			if err != nil {
-				errors <- err
+				errorChan <- err
 				return
 			}
 			// Fill the result map with prevent race conditions
@@ -75,7 +90,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			result.Maps[num] = Data{Url: url, Body: page}
 			result.mx.RUnlock()
 
-			<-semaphoreChannel
+			<-semaphoreChan
 		}(url, num, &result, &wg)
 		num++
 
@@ -86,7 +101,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 		// Handle errors and user cancellation
 		select {
-		case err := <-errors:
+		case err := <-errorChan:
 			outputError(w, err)
 			return
 		case <-ctx.Done():
@@ -95,6 +110,9 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 	}
+
+	close(errorChan)
+	close(semaphoreChan)
 
 	// Compile output data in incoming order
 	var outputData OutputData
@@ -153,9 +171,9 @@ func main() {
 	}()
 
 	// Handle terminations signals
-	signalChannel := make(chan os.Signal, 1)
-	signal.Notify(signalChannel, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	<-signalChannel
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	<-signalChan
 	log.Println("Shutting down the server gracefully...")
 
 	// Shutdown gracefully

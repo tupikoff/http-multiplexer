@@ -17,7 +17,7 @@ func TestS(t *testing.T) {
 
 	var in InputData
 	var out OutputData
-	for i := 1; i < 101; i++ {
+	for i := 1; i < 21; i++ {
 		uri := fmt.Sprintf("/%d", i)
 		url := ts.URL + uri
 		in.Urls = append(in.Urls, url)
