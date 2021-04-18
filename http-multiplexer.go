@@ -16,34 +16,39 @@ import (
 	"time"
 )
 
+// MaxIncomingUrls :: number of max incoming urls
 const MaxIncomingUrls = 20
 
-// Maximum number of simultaneous outgoing requests (goroutines) on each incoming
+// MaxOutgoingRequests - Maximum number of simultaneous outgoing requests (goroutines) on each incoming
 const MaxOutgoingRequests = 4
 
-// Outgoing request timeout
+// ClientTimeoutSec - Outgoing request timeout
 const ClientTimeoutSec = 1
 
-// Maximum incoming connections
+// MaxConnections - Maximum incoming connections
 const MaxConnections = 100
 
+// ServerShutdownTimeoutSec :: timeout for wait for shutdown gracefully
 const ServerShutdownTimeoutSec = 30
 
+// InputData :: struct for data in incoming request
 type InputData struct {
 	Urls []string
 }
 
+// Data :: struct for result
 type Data struct {
 	Url  string `json:"url"`
 	Body string `json:"body"`
 }
 
-// Internal storage of results with key as order of url in incoming sequence
+// Result :: Internal storage of results with key as order of url in incoming sequence
 type Result struct {
 	mx   sync.RWMutex
 	Maps map[int]Data
 }
 
+// OutputData :: struct for outgoing response
 type OutputData struct {
 	Pages []Data `json:"pages"`
 }
@@ -67,12 +72,14 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	var result Result
 	result.Maps = make(map[int]Data, len(inputData.Urls))
 	var wg sync.WaitGroup
-	semaphoreChan := make(chan struct{}, MaxOutgoingRequests) // Use the buffered channel of structs as semaphore
+	// Use the buffered channel of structs as semaphore
+	semaphoreChan := make(chan struct{}, MaxOutgoingRequests)
 	errorChan := make(chan error, 1)
 	ctx := r.Context()
 	num := 0
 
 	for _, url := range inputData.Urls {
+		// Wait here in case of more than MaxOutgoingRequests running
 		semaphoreChan <- struct{}{}
 		wg.Add(1)
 
